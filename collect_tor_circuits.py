@@ -1,69 +1,107 @@
+#!/usr/bin/env python3
+import stem.control
 import csv
-import os
+import time
 from datetime import datetime
-from stem.control import Controller
 
-# Gera nome do arquivo CSV baseado no datetime
-timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-csv_filename = f"circuits_{timestamp}.csv"
+# --- Funções auxiliares para país e ASN (fallback pra UNKNOWN) ---
 
-# Cria CSV e cabeçalho
-with open(csv_filename, mode="w", newline="", encoding="utf-8") as csvfile:
+def get_country(ip):
+    # Aqui dá pra integrar com bases offline depois (GeoLite2, etc.)
+    # Por enquanto retorna UNKNOWN para não travar o script
+    return "UNKNOWN"
+
+def get_asn(ip):
+    # Mesma ideia: pode integrar base MaxMind, IP2ASN ou whois depois
+    return "UNKNOWN"
+
+
+# --- Nome do arquivo CSV com datetime ---
+timestamp_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+csv_filename = f"circuits_{timestamp_str}.csv"
+
+# Cria e escreve cabeçalho
+with open(csv_filename, "w", newline="") as csvfile:
     writer = csv.writer(csvfile)
-    writer.writerow(["circuit_id", "status", "relays"])
+    writer.writerow([
+        "timestamp",
+        "circuit_id",
+        "role",
+        "fingerprint",
+        "nickname",
+        "ip",
+        "bandwidth",
+        "country",
+        "asn"
+    ])
 
-def handle_circuit(controller, event):
-    """
-    Função chamada sempre que houver alteração em circuitos.
-    """
-    # Tratando a questão do .status vs string
-    status_attr = getattr(event, "status", "")
-    status_str = status_attr.name if hasattr(status_attr, "name") else str(status_attr)
+print(f"[OK] CSV criado: {csv_filename}")
 
-    if status_str.upper() != "BUILT":
-        return  # Desconsidera se não estiver finalizado
 
-    circuit_id = getattr(event, "id", "N/A")
-    path_info = getattr(event, "path", [])
-
-    relays = []
-    for relay in path_info:
-        # Cada relay pode vir como tupla (fingerprint, nickname)
-        if isinstance(relay, (list, tuple)) and len(relay) >= 2:
-            fingerprint, nickname = relay[0], relay[1]
-            relays.append(f"{nickname} ({fingerprint})")
+# --- Função para tratar eventos de circuito ---
+def circ_handler(event):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    circuit_id = event.id
+    path = event.path  # lista de (fingerprint, nickname)
+    
+    # Tenta obter descrições dos relays
+    for idx, (fingerprint, nickname) in enumerate(path):
+        if idx == 0:
+            role = "guard"
+        elif idx == len(path) - 1:
+            role = "exit"
         else:
-            relays.append(str(relay))
+            role = "middle"
 
-    # Salva no CSV
-    with open(csv_filename, mode="a", newline="", encoding="utf-8") as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow([circuit_id, status_str, " | ".join(relays)])
+        fingerprint = fingerprint or "UNKNOWN"
+        nickname = nickname or "UNKNOWN"
+        
+        ip = "UNKNOWN"
+        bandwidth = "UNKNOWN"
+        
+        try:
+            desc = controller.get_network_status(fingerprint)
+            if desc:
+                ip = desc.address or "UNKNOWN"
+        except Exception:
+            pass
+        
+        country = get_country(ip)
+        asn = get_asn(ip)
 
-    print(f"[OK] Circuito {circuit_id} registrado -> {relays}")
+        with open(csv_filename, "a", newline="") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow([
+                ts,
+                circuit_id,
+                role,
+                fingerprint,
+                nickname,
+                ip,
+                bandwidth,
+                country,
+                asn
+            ])
 
-def main():
-    tor_control_path = "/run/tor/control"
-    if not os.path.exists(tor_control_path):
-        print(f"[ERRO] Não encontrei {tor_control_path}.")
-        return
+        print(f"[LOG] {ts} | CID:{circuit_id} | {role} | {fingerprint} | {ip} | {country} | {asn}")
 
-    try:
-        with Controller.from_socket_file(tor_control_path) as controller:
-            controller.authenticate()
 
-            print("[INFO] Conectado ao Tor. Monitorando circuitos (BUILT).")
-            controller.add_event_listener(handle_circuit, "CIRC")
+# --- Conecta ao Tor Controller e registra handler ---
+try:
+    controller = stem.control.Controller.from_socket_file("/run/tor/control")
+    controller.authenticate()
+    print("[OK] Conectado ao Tor Controller via /run/tor/control")
+except Exception as e:
+    print(f"[ERRO] Não foi possível conectar ao Tor Controller: {e}")
+    exit(1)
 
-            print("[INFO] Abra o Tor Browser e navegue para gerar circuitos.")
-            print(f"[INFO] Salvando dados em: {csv_filename}")
+controller.add_event_listener(circ_handler, stem.control.EventType.CIRC)
+print("[INFO] Monitorando novos circuitos. Navegue no Tor Browser...")
 
-            # Fica esperando eventos
-            while True:
-                pass
 
-    except Exception as e:
-        print(f"[ERRO] {e}")
-
-if __name__ == "__main__":
-    main()
+# --- Mantém o script vivo até CTRL+C ---
+try:
+    while True:
+        time.sleep(1)
+except KeyboardInterrupt:
+    print("\n[INFO] Interrompido pelo usuário. CSV final salvo:", csv_filename)
