@@ -3,33 +3,16 @@ import stem.control
 import csv
 import time
 from datetime import datetime
-import requests
 
-# --- Funções com integração na API ip-api.com ---
+# --- Funções auxiliares para país e ASN (fallback pra UNKNOWN) ---
 
 def get_country(ip):
-    if ip in ("UNKNOWN", None, ""):
-        return "UNKNOWN"
-    try:
-        resp = requests.get(f"http://ip-api.com/json/{ip}", timeout=3)
-        data = resp.json()
-        if data.get("status") == "success":
-            return data.get("country", "UNKNOWN")
-    except Exception:
-        pass
+    # Aqui dá pra integrar com bases offline depois (GeoLite2, etc.)
+    # Por enquanto retorna UNKNOWN para não travar o script
     return "UNKNOWN"
 
 def get_asn(ip):
-    if ip in ("UNKNOWN", None, ""):
-        return "UNKNOWN"
-    try:
-        resp = requests.get(f"http://ip-api.com/json/{ip}", timeout=3)
-        data = resp.json()
-        if data.get("status") == "success":
-            raw_as = data.get("as", "")
-            return raw_as if raw_as else "UNKNOWN"
-    except Exception:
-        pass
+    # Mesma ideia: pode integrar base MaxMind, IP2ASN ou whois depois
     return "UNKNOWN"
 
 
@@ -61,6 +44,7 @@ def circ_handler(event):
     circuit_id = event.id
     path = event.path  # lista de (fingerprint, nickname)
     
+    # Tenta obter descrições dos relays
     for idx, (fingerprint, nickname) in enumerate(path):
         if idx == 0:
             role = "guard"
