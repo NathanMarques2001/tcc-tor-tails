@@ -1,0 +1,5 @@
+sudo apt update
+sudo apt install python3-pip
+sudo apt install python3-stem
+chmod +x collect_tor_circuits.py
+sudo python3 collect_tor_circuits.py
